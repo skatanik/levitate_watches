@@ -5,8 +5,20 @@
 #include "cmsis_os.h"
 #include "main.h"
 
-#define PID_DESIRED_VAL 								2048
-#define LEVITATE_CONTROL_PERIOD_MS 			25
+#define HALL_MAX_1 3223
+#define HALL_MAX_2 3211
+
+#define HALL_MIN_1 220
+#define HALL_MIN_2 191
+
+#define DELTA_LOW  180
+#define DELTA_HIGH  30
+
+#define PERIOD_AVG 1
+
+#define SAT_VAL 2000
+
+#define LEVITATE_CONTROL_PERIOD_MS 			10
 
 static TaskHandle_t xHandle;
 extern TIM_HandleTypeDef htim1;
@@ -170,13 +182,13 @@ void vLevitateControlTask(void * pvParameters)
   uint16_t hall1Value;
 	uint16_t hall2Value;
 	
-	float coefPHall_1 = 1;
+	float coefPHall_1 = 0.9;
 	float coefIHall_1 = 0;
-	float coefDHall_1 = 0;
+	float coefDHall_1 = 0.01;
 	
-	float coefPHall_2 = 1;
+	float coefPHall_2 = 0.9;
 	float coefIHall_2 = 0;
-	float coefDHall_2 = 0;
+	float coefDHall_2 = 0.01;
 	
 	float integralSummHall1 = 0;
 	float integralSummHall2 = 0;
@@ -187,32 +199,95 @@ void vLevitateControlTask(void * pvParameters)
 	float resultHall1;
 	float resultHall2;
 	
+	float PID_DESIRED_VAL_1 = (HALL_MAX_1 - HALL_MIN_1) / 2.0;
+	float PID_DESIRED_VAL_2 = (HALL_MAX_2 - HALL_MIN_2) / 2.0;
+	
+	float hall_1_summ = 0;
+	float hall_2_summ = 0;
+	
+	volatile float hall_1_avg = 0;
+	volatile float hall_2_avg = 0;
+	int cnt = 0;
+	
+	volatile int mode_waiting = 1;
+	
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
 	
 	while(1)
 	{
-		// PID processing HALL 1
 		hall1Value = readHALL_1();
-		errorValueHall1 = PID_DESIRED_VAL - hall1Value;
-		resultHall1 = integralSummHall1 * coefIHall_1 + coefDHall_1 * (errorValueHall1Prev - errorValueHall1)/((float)LEVITATE_CONTROL_PERIOD_MS / 1000.0) + errorValueHall1 * coefPHall_1;
-		resultHall1 = saturateValue(resultHall1, 1024);
-		integralSummHall1 = integralSummHall1 + errorValueHall1;
-		integralSummHall1 = saturateValue(integralSummHall1, 4096);
-		errorValueHall1Prev = errorValueHall1;
-
-		setPWMHall_1(1024*sin(i*3.14/180.0));		
-		i++;	
-		
-		// PID processing HALL 2
 		hall2Value = readHALL_2();
-		errorValueHall2 = PID_DESIRED_VAL - hall2Value;
-		resultHall2 = integralSummHall2 * coefIHall_2 + coefDHall_2 * (errorValueHall2Prev - errorValueHall2)/((float)LEVITATE_CONTROL_PERIOD_MS / 1000.0) + errorValueHall2 * coefPHall_2;
-		resultHall2 = saturateValue(resultHall2, 1024);
-		integralSummHall2 = integralSummHall2 + errorValueHall2;
-		integralSummHall2 = saturateValue(integralSummHall2, 4096);
-		errorValueHall2Prev = errorValueHall2;
 		
-		setPWMHall_2(1024*cos(i*3.14/180.0));	
+		hall_1_summ += (float)hall1Value;
+		hall_2_summ += (float)hall2Value;
+		cnt ++;
 		
+		if(cnt == PERIOD_AVG)
+		{
+			hall_1_avg = hall_1_summ / PERIOD_AVG;
+			hall_2_avg = hall_2_summ / PERIOD_AVG;
+			
+			cnt = 0;
+			hall_1_summ = 0;
+			hall_2_summ = 0;
+		
+		
+			if(mode_waiting == 1)
+			{
+				if(((hall_1_avg <= (HALL_MAX_1 - DELTA_HIGH) && (hall_1_avg >= (HALL_MIN_1 + DELTA_LOW))))
+						&& ((hall_2_avg <= (HALL_MAX_2 - DELTA_HIGH) && (hall_2_avg >= (HALL_MIN_2 + DELTA_LOW)))))
+				{		
+					mode_waiting = 0;	
+					HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_SET);
+					HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET);
+				}
+			}
+			else
+			{
+				if(((hall_1_avg >= (HALL_MAX_1 - DELTA_HIGH) || (hall_1_avg <= (HALL_MIN_1 + DELTA_LOW))))
+						|| ((hall_2_avg >= (HALL_MAX_2 - DELTA_HIGH) || (hall_2_avg <= (HALL_MIN_2 + DELTA_LOW)))))
+				{
+					mode_waiting = 1;
+					integralSummHall1 = 0;
+					integralSummHall2 = 0;
+					setPWMHall_1(0);
+					setPWMHall_2(0);
+					HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_RESET);
+					HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+				}
+			}
+			hall_1_avg = 0;
+			hall_2_avg = 0;
+		}
+		
+		
+		if(!mode_waiting)
+		{
+			// PID processing HALL 1
+			errorValueHall1 = PID_DESIRED_VAL_1 - (float)hall1Value;
+			resultHall1 = integralSummHall1 * coefIHall_1 + coefDHall_1 * (errorValueHall1Prev - errorValueHall1)/((float)LEVITATE_CONTROL_PERIOD_MS / 1000.0) + errorValueHall1 * coefPHall_1;
+			resultHall1 = saturateValue(resultHall1, SAT_VAL);
+			integralSummHall1 = integralSummHall1 + errorValueHall1;
+			integralSummHall1 = saturateValue(integralSummHall1, 4096);
+			errorValueHall1Prev = errorValueHall1;
+
+			//setPWMHall_1(1024*sin(i*3.14/180.0));		
+			setPWMHall_1(resultHall1);		
+			i++;	
+			
+			// PID processing HALL 2
+			errorValueHall2 = PID_DESIRED_VAL_2 - (float)hall2Value;
+			resultHall2 = integralSummHall2 * coefIHall_2 + coefDHall_2 * (errorValueHall2Prev - errorValueHall2)/((float)LEVITATE_CONTROL_PERIOD_MS / 1000.0) + errorValueHall2 * coefPHall_2;
+			resultHall2 = saturateValue(resultHall2, SAT_VAL);
+			integralSummHall2 = integralSummHall2 + errorValueHall2;
+			integralSummHall2 = saturateValue(integralSummHall2, 4096);
+			errorValueHall2Prev = errorValueHall2;
+			
+			setPWMHall_2(resultHall2);	
+
+		}
+			
 		vTaskDelay( levitateControlPeriod );
 	}
 	
