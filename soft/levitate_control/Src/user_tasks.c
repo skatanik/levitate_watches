@@ -59,7 +59,7 @@ uint16_t readHALL_1(void)
 {
 	uint16_t adc_result = 0;
 	
-	adc_result = readADC(&hadc1, ADC_CHANNEL_1);
+	adc_result = readADC(&hadc1, ADC_CHANNEL_8);
 	
 	return adc_result;
 }
@@ -68,7 +68,7 @@ uint16_t readHALL_2(void)
 {
 	uint16_t adc_result = 0;
 	
-	adc_result = readADC(&hadc1, ADC_CHANNEL_2);
+	adc_result = readADC(&hadc1, ADC_CHANNEL_9);
 	
 	return adc_result;
 }
